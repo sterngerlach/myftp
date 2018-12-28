@@ -1,0 +1,7 @@
+
+# .gitignore
+
+myftp/obj/*
+myftps
+myftpc
+
