@@ -11,10 +11,12 @@ OUTDIR = .
 
 TARGET_SERVER = $(OUTDIR)/myftps
 OBJECTS_SERVER = $(addprefix $(OBJDIR)/, \
-	myftps.o)
+	myftps.o myftps_context.o util.o \
+	myftp.o dynamic_string.o)
 TARGET_CLIENT = $(OUTDIR)/myftpc
 OBJECTS_CLIENT = $(addprefix $(OBJDIR)/, \
-	myftpc.o)
+	myftpc.o util.o myftp.o \
+	dynamic_string.o)
 
 server: $(TARGET_SERVER)
 client: $(TARGET_CLIENT)
