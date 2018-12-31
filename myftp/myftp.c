@@ -530,7 +530,7 @@ bool get_file_stat_string(
     char** buffer, int* save_errno,
     const struct stat* stat_buf, const char* file_name)
 {
-    char file_mode_str[10];
+    char file_mode_str[11];
     struct passwd* pwd_owner = NULL;
     struct group* grp_owner = NULL;
     char* owner_user = NULL;
@@ -561,6 +561,7 @@ bool get_file_stat_string(
     file_mode_str[8] = (stat_buf->st_mode & S_IWOTH) ? 'w' : '-';
     file_mode_str[9] = (stat_buf->st_mode & S_IXOTH) ? 'x' :
                        (stat_buf->st_mode & S_ISVTX) ? 't' : '-';
+    file_mode_str[10] = '\0';
     
     /* 所有者名を取得 */
     if ((pwd_owner = getpwuid(stat_buf->st_uid)) == NULL) {
