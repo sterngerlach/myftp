@@ -9,12 +9,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
+#include <dirent.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <pwd.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 
+#include "dynamic_string.h"
 #include "myftp.h"
 #include "util.h"
 
@@ -56,19 +61,56 @@ void dump_ftp_header(const struct ftp_header* header)
     assert(header != NULL);
 
     fprintf(stderr,
-            "type: " ANSI_ESCAPE_COLOR_GREEN "%s" ANSI_ESCAPE_COLOR_RESET ", "
-            "code: " ANSI_ESCAPE_COLOR_GREEN "%s" ANSI_ESCAPE_COLOR_RESET ", "
+            "type: " ANSI_ESCAPE_COLOR_GREEN "%s" ANSI_ESCAPE_COLOR_RESET
+            " (%" PRIu8 "), "
+            "code: " ANSI_ESCAPE_COLOR_GREEN "%s" ANSI_ESCAPE_COLOR_RESET
+            " (%" PRIu8 "), "
             "length: " ANSI_ESCAPE_COLOR_GREEN "%" PRIu16 ANSI_ESCAPE_COLOR_RESET "\n",
-            ftp_header_type_to_string(header->type),
-            ftp_header_code_to_string(header->type, header->code),
+            ftp_header_type_to_string(header->type), header->type,
+            ftp_header_code_to_string(header->type, header->code), header->code,
             ntohs(header->length));
+}
+
+/*
+ * FTPヘッダ(先頭の4バイト)を受信
+ */
+bool receive_ftp_header(
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
+    struct ftp_header* header)
+{
+    ssize_t recv_bytes = 0;
+
+    assert(sockfd >= 0);
+    assert(name != NULL);
+    assert(header != NULL);
+
+    /* FTPヘッダを受信 */
+    recv_bytes = recv_all(sockfd, header, sizeof(struct ftp_header));
+
+    /* FTPヘッダの先頭4バイトを受信できなかった場合はエラー */
+    if (recv_bytes != sizeof(struct ftp_header)) {
+        print_error(__func__,
+                    ANSI_ESCAPE_COLOR_RED
+                    "could not receive full ftp header\n"
+                    ANSI_ESCAPE_COLOR_RESET);
+        return false;
+    }
+    
+    /* メッセージを表示 */
+    if (verbose) {
+        print_message(__func__, "ftp header received from %s %s: ",
+                      name, inet_ntoa(addr));
+        dump_ftp_header(header);
+    }
+
+    return true;
 }
 
 /*
  * 文字列データを受信
  */
 bool receive_string_data(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     uint16_t len, char** data)
 {
     ssize_t recv_bytes = 0;
@@ -106,10 +148,11 @@ bool receive_string_data(
     }
 
     /* 末尾をヌル文字で終端 */
-    data[len] = '\0';
-
-    print_message(__func__, "string data (%zd bytes) received from %s %s\n",
-                  recv_bytes, name, inet_ntoa(addr));
+    (*data)[len] = '\0';
+    
+    if (verbose)
+        print_message(__func__, "string data (%zd bytes) received from %s %s\n",
+                      recv_bytes, name, inet_ntoa(addr));
 
     return true;
 }
@@ -118,7 +161,7 @@ bool receive_string_data(
  * 生データ(バイト列)を受信
  */
 bool receive_raw_data(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     uint16_t len, char** data)
 {
     ssize_t recv_bytes = 0;
@@ -154,9 +197,10 @@ bool receive_raw_data(
         SAFE_FREE(*data);
         return false;
     }
-
-    print_message(__func__, "raw data (%zd bytes) received from %s %s\n",
-                  recv_bytes, name, inet_ntoa(addr));
+    
+    if (verbose)
+        print_message(__func__, "raw data (%zd bytes) received from %s %s\n",
+                      recv_bytes, name, inet_ntoa(addr));
 
     return true;
 }
@@ -165,13 +209,14 @@ bool receive_raw_data(
  * ファイルをデータメッセージで受信
  */
 bool receive_file_data_message(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     int fd)
 {
     char* buffer = NULL;
     ssize_t recv_bytes = 0;
     ssize_t written_bytes = 0;
     ssize_t data_length = 0;
+    ssize_t total_length = 0;
     struct ftp_header header;
 
     assert(sockfd >= 0);
@@ -206,7 +251,7 @@ bool receive_file_data_message(
         }
 
         /* codeフィールドが誤っている場合はエラー */
-        if (header.code != FTP_HEADER_CODE_DATA_REMAINING ||
+        if (header.code != FTP_HEADER_CODE_DATA_REMAINING &&
             header.code != FTP_HEADER_CODE_DATA_NOT_REMAINING) {
             print_error(__func__,
                         "invalid message code: %" PRIu8 ", "
@@ -220,12 +265,19 @@ bool receive_file_data_message(
                                                   FTP_HEADER_CODE_DATA_NOT_REMAINING));
             return false;
         }
+    
+        if (verbose) {
+            print_message(__func__, "tcp header received from %s %s: ",
+                          name, inet_ntoa(addr));
+            dump_ftp_header(&header);
+        }
 
         /* データ長を取得 */
         data_length = ntohs(header.length);
+        total_length += data_length;
 
         /* ファイルの一部を受信 */
-        if (!receive_raw_data(sockfd, addr, name, data_length, &buffer)) {
+        if (!receive_raw_data(sockfd, addr, name, verbose, data_length, &buffer)) {
             print_error(__func__, "receive_raw_data() failed\n");
             return false;
         }
@@ -244,6 +296,11 @@ bool receive_file_data_message(
         SAFE_FREE(buffer);
     } while (header.code == FTP_HEADER_CODE_DATA_REMAINING);
 
+    if (verbose)
+        print_message(__func__,
+                      "%zd bytes received from %s %s and written to file (fd: %d)\n",
+                      total_length, name, inet_ntoa(addr), fd);
+
     return true;
 }
 
@@ -251,7 +308,7 @@ bool receive_file_data_message(
  * メッセージを送信
  */
 bool send_ftp_header(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     uint8_t type, uint8_t code,
     uint16_t len, char* buf)
 {
@@ -274,7 +331,7 @@ bool send_ftp_header(
 
     /* メッセージを送信 */
     header_length = sizeof(struct ftp_header) + sizeof(char) * len;
-    send_bytes = send_all(sockfd, &header, header_length);
+    send_bytes = send_all(sockfd, header, header_length);
 
     /* 送信できなかった場合はエラー */
     if (send_bytes != header_length) {
@@ -286,9 +343,11 @@ bool send_ftp_header(
     }
 
     /* メッセージを表示 */
-    print_message(__func__, "ftp header has been sent to %s %s: ",
-                  name, inet_ntoa(addr));
-    dump_ftp_header(header);
+    if (verbose) {
+        print_message(__func__, "ftp header has been sent to %s %s: ",
+                      name, inet_ntoa(addr));
+        dump_ftp_header(header);
+    }
 
     /* メッセージを解放 */
     SAFE_FREE(header);
@@ -300,7 +359,7 @@ bool send_ftp_header(
  * データメッセージを送信
  */
 bool send_data_message(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     char* buf, ssize_t len, ssize_t chunk_size)
 {
     struct ftp_header* header = NULL;
@@ -340,7 +399,7 @@ bool send_data_message(
         
         /* メッセージを送信 */
         header_length = sizeof(struct ftp_header) + sizeof(char) * data_length;
-        send_bytes = send_all(sockfd, &header, header_length);
+        send_bytes = send_all(sockfd, header, header_length);
         
         /* 送信できなかった場合はエラー */
         if (send_bytes != header_length) {
@@ -355,8 +414,12 @@ bool send_data_message(
         SAFE_FREE(header);
 
         /* 残りのバイト数を更新 */
-        remaining_bytes -= send_bytes;
+        remaining_bytes -= data_length;
     } while (remaining_bytes > 0);
+
+    if (verbose)
+        print_message(__func__, "raw data (%zd bytes) has been sent to %s %s\n",
+                      len, name, inet_ntoa(addr));
 
     return true;
 }
@@ -365,7 +428,7 @@ bool send_data_message(
  * ファイルをデータメッセージで送信
  */
 bool send_file_data_message(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     int fd, ssize_t chunk_size)
 {
     struct ftp_header* header = NULL;
@@ -434,7 +497,7 @@ bool send_file_data_message(
 
         /* 作成できなかった場合はエラー */
         header_length = sizeof(struct ftp_header) + sizeof(char) * data_length;
-        send_bytes = send_all(sockfd, &header, header_length);
+        send_bytes = send_all(sockfd, header, header_length);
 
         /* 送信できなかった場合はエラー */
         if (send_bytes != header_length) {
@@ -450,10 +513,247 @@ bool send_file_data_message(
         SAFE_FREE(header);
     } while (remaining_bytes > 0);
 
+    if (verbose)
+        print_message(__func__, "file data (%zd bytes) has been sent to %s %s\n",
+                      file_size, name, inet_ntoa(addr));
+
     /* バッファを解放 */
     SAFE_FREE(buffer);
 
     return true;
+}
+
+/*
+ * ファイルの属性を文字列に変換
+ */
+bool get_file_stat_string(
+    char** buffer, int* save_errno,
+    const struct stat* stat_buf, const char* file_name)
+{
+    char file_mode_str[10];
+    struct passwd* pwd_owner = NULL;
+    struct group* grp_owner = NULL;
+    char* owner_user = NULL;
+    char* owner_group = NULL;
+    struct tm mtime;
+    char* format;
+    int len;
+
+    assert(buffer != NULL);
+    assert(save_errno != NULL);
+    assert(stat_buf != NULL);
+    assert(file_name != NULL);
+
+    *buffer = NULL;
+
+    /* ファイルモードを文字列に変換 */
+    file_mode_str[0] = S_ISREG(stat_buf->st_mode) ? '-' :
+                       S_ISDIR(stat_buf->st_mode) ? 'd' : '?';
+    file_mode_str[1] = (stat_buf->st_mode & S_IRUSR) ? 'r' : '-';
+    file_mode_str[2] = (stat_buf->st_mode & S_IWUSR) ? 'w' : '-';
+    file_mode_str[3] = (stat_buf->st_mode & S_IXUSR) ? 'x' :
+                       (stat_buf->st_mode & S_ISUID) ? 's' : '-';
+    file_mode_str[4] = (stat_buf->st_mode & S_IRGRP) ? 'r' : '-';
+    file_mode_str[5] = (stat_buf->st_mode & S_IWGRP) ? 'w' : '-';
+    file_mode_str[6] = (stat_buf->st_mode & S_IXGRP) ? 'x' :
+                       (stat_buf->st_mode & S_ISGID) ? 's' : '-';
+    file_mode_str[7] = (stat_buf->st_mode & S_IROTH) ? 'r' : '-';
+    file_mode_str[8] = (stat_buf->st_mode & S_IWOTH) ? 'w' : '-';
+    file_mode_str[9] = (stat_buf->st_mode & S_IXOTH) ? 'x' :
+                       (stat_buf->st_mode & S_ISVTX) ? 't' : '-';
+    
+    /* 所有者名を取得 */
+    if ((pwd_owner = getpwuid(stat_buf->st_uid)) == NULL) {
+        *save_errno = errno;
+        print_error(__func__, "getpwuid() failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    /* 所有者名をコピー */
+    if ((owner_user = strdup(pwd_owner->pw_name)) == NULL) {
+        *save_errno = errno;
+        print_error(__func__, "strdup() failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    /* 所有グループ名を取得 */
+    if ((grp_owner = getgrgid(stat_buf->st_gid)) == NULL) {
+        *save_errno = errno;
+        print_error(__func__, "getgrgid() failed: %s\n", strerror(errno));
+        SAFE_FREE(owner_user);
+        return false;
+    }
+
+    /* 所有グループ名をコピー */
+    if ((owner_group = strdup(grp_owner->gr_name)) == NULL) {
+        *save_errno = errno;
+        print_error(__func__, "strdup() failed: %s\n", strerror(errno));
+        SAFE_FREE(owner_user);
+        return false;
+    }
+
+    /* ファイルの最終変更時刻を時刻要素別に変換 */
+    if (localtime_r(&stat_buf->st_mtime, &mtime) == NULL) {
+        print_error(__func__, "localtime_r() failed\n");
+        SAFE_FREE(owner_user);
+        SAFE_FREE(owner_group);
+        return false;
+    }
+
+    /* ファイルの属性を文字列に変換 */
+    format = "%s %" PRIuMAX " %s %s %" PRIuMAX " %d-%d-%d %d:%d:%d %s%s\n";
+    len = snprintf(NULL, 0, format,
+                   file_mode_str, (uintmax_t)stat_buf->st_nlink,
+                   owner_user, owner_group, (uintmax_t)stat_buf->st_size,
+                   mtime.tm_year + 1900, mtime.tm_mon + 1, mtime.tm_mday,
+                   mtime.tm_hour, mtime.tm_min, mtime.tm_sec,
+                   file_name, S_ISDIR(stat_buf->st_mode) ? "/" : "");
+    
+    if (len < 0) {
+        print_error(__func__, "snprintf() failed\n");
+        SAFE_FREE(owner_user);
+        SAFE_FREE(owner_group);
+        return false;
+    }
+
+    *buffer = (char*)calloc(len + 1, sizeof(char));
+    
+    if (*buffer == NULL) {
+        *save_errno = errno;
+        print_error(__func__, "calloc() failed: %s\n", strerror(errno));
+        SAFE_FREE(owner_user);
+        SAFE_FREE(owner_group);
+        return false;
+    }
+    
+    if (snprintf(*buffer, len + 1, format,
+                 file_mode_str, (uintmax_t)stat_buf->st_nlink,
+                 owner_user, owner_group, (uintmax_t)stat_buf->st_size,
+                 mtime.tm_year + 1900, mtime.tm_mon + 1, mtime.tm_mday,
+                 mtime.tm_hour, mtime.tm_min, mtime.tm_sec,
+                 file_name, S_ISDIR(stat_buf->st_mode) ? "/" : "") < 0) {
+        print_error(__func__, "snprintf() failed\n");
+        SAFE_FREE(*buffer);
+        SAFE_FREE(owner_user);
+        SAFE_FREE(owner_group);
+        return false;
+    }
+    
+    SAFE_FREE(owner_user);
+    SAFE_FREE(owner_group);
+    
+    return true;
+}
+
+/*
+ * ファイルの情報を取得して文字列に変換
+ */
+bool get_list_command_result(
+    char** buffer, int* save_errno, const char* path, bool verbose)
+{
+    struct stat stat_buf;
+    struct dynamic_string dyn_str;
+    DIR* dirp = NULL;
+    struct dirent* ent = NULL;
+    char* tmp_buffer = NULL;
+
+    assert(buffer != NULL);
+    assert(save_errno != NULL);
+    assert(path != NULL);
+
+    *buffer = NULL;
+    
+    /* 指定されたファイルの属性を取得 */
+    if (stat(path, &stat_buf) < 0) {
+        *save_errno = errno;
+
+        if (verbose)
+            print_error(__func__, "stat() failed: %s\n", strerror(errno));
+
+        return false;
+    }
+
+    /* ファイルの種別を判定 */
+    /* 通常のファイルである場合 */
+    if (S_ISREG(stat_buf.st_mode)) {
+        /* ファイルの属性を文字列に変換 */
+        if (!get_file_stat_string(buffer, save_errno, &stat_buf, path)) {
+            print_error(__func__, "get_file_stat_string() failed\n");
+            return false;
+        }
+
+        return true;
+    }
+    
+    /* ディレクトリである場合 */
+    if (S_ISDIR(stat_buf.st_mode)) {
+        /* 動的文字列を初期化 */
+        if (!initialize_dynamic_string(&dyn_str)) {
+            print_error(__func__, "initialize_dynamic_string() failed\n");
+            return false;
+        }
+        
+        /* ディレクトリを開く */
+        if ((dirp = opendir(path)) == NULL) {
+            *save_errno = errno;
+
+            if (verbose)
+                print_error(__func__, "opendir() failed: %s\n", strerror(errno));
+
+            free_dynamic_string(&dyn_str);
+            return false;
+        }
+        
+        /* ディレクトリに含まれるファイルを走査 */
+        while ((ent = readdir(dirp)) != NULL) {
+            /* ファイルの属性を取得 */
+            if (stat(ent->d_name, &stat_buf) < 0) {
+                *save_errno = errno;
+
+                if (verbose)
+                    print_error(__func__, "stat() failed: %s\n", strerror(errno));
+
+                continue;
+            }
+
+            /* ファイルの属性を文字列に変換 */
+            if (!get_file_stat_string(&tmp_buffer, save_errno, &stat_buf, ent->d_name)) {
+                print_error(__func__, "get_file_stat_string() failed\n");
+                continue;
+            }
+            
+            /* ファイルの属性を表す文字列を追加 */
+            if (!dynamic_string_append(&dyn_str, tmp_buffer)) {
+                print_error(__func__, "dynamic_string_append() failed\n");
+                SAFE_FREE(tmp_buffer);
+                free_dynamic_string(&dyn_str);
+                return false;
+            }
+
+            SAFE_FREE(tmp_buffer);
+        }
+
+        /* ディレクトリを閉じる */
+        if (closedir(dirp) < 0) {
+            *save_errno = errno;
+            print_error(__func__, "closedir() failed: %s\n", strerror(errno));
+            free_dynamic_string(&dyn_str);
+            return false;
+        }
+
+        /* ファイルの属性を表す文字列を返す */
+        *buffer = move_dynamic_string(&dyn_str);
+        
+        return true;
+    }
+
+    /* それ以外である場合はエラー */
+    *save_errno = ENOENT;
+
+    if (verbose)
+        print_error(__func__, "no such file or directory: %s\n", path);
+
+    return false;
 }
 
 /*
@@ -475,7 +775,8 @@ const char* ftp_header_type_to_string(uint8_t type)
         [FTP_HEADER_TYPE_DATA]      = "DATA",
     };
     
-    assert(type <= FTP_HEADER_TYPE_DATA);
+    if (type > FTP_HEADER_TYPE_DATA)
+        return "Unknown";
 
     return header_type_str[type] ?
            header_type_str[type] : "Unknown";
@@ -520,17 +821,20 @@ const char* ftp_header_code_to_string(uint8_t type, uint8_t code)
         [FTP_HEADER_TYPE_DATA]      = header_code_data_str,
     };
 
-    assert(type <= FTP_HEADER_TYPE_DATA);
-    assert((type == FTP_HEADER_TYPE_OK) ?
-           (code <= FTP_HEADER_CODE_OK_CLIENT_DATA_REMAINING) :
-           (type == FTP_HEADER_TYPE_CMD_ERR) ?
-           (code <= FTP_HEADER_CODE_CMD_ERR_PROTOCOL) :
-           (type == FTP_HEADER_TYPE_FILE_ERR) ?
-           (code <= FTP_HEADER_CODE_FILE_ERR_PERM_ERR) :
-           (type == FTP_HEADER_TYPE_UNKWN_ERR) ?
-           (code <= FTP_HEADER_CODE_UNKWN_ERR) :
-           (type == FTP_HEADER_TYPE_DATA) ?
-           (code <= FTP_HEADER_CODE_DATA_REMAINING) : true);
+    if (type > FTP_HEADER_TYPE_DATA)
+        return "Unknown";
+
+    if ((type == FTP_HEADER_TYPE_OK) ?
+        (code > FTP_HEADER_CODE_OK_CLIENT_DATA_REMAINING) :
+        (type == FTP_HEADER_TYPE_CMD_ERR) ?
+        (code > FTP_HEADER_CODE_CMD_ERR_PROTOCOL) :
+        (type == FTP_HEADER_TYPE_FILE_ERR) ?
+        (code > FTP_HEADER_CODE_FILE_ERR_PERM_ERR) :
+        (type == FTP_HEADER_TYPE_UNKWN_ERR) ?
+        (code > FTP_HEADER_CODE_UNKWN_ERR) :
+        (type == FTP_HEADER_TYPE_DATA) ?
+        (code > FTP_HEADER_CODE_DATA_REMAINING) : false)
+        return "Unknown";
 
     return header_code_str[type] ?
            header_code_str[type][code] ?

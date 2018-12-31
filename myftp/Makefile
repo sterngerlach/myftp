@@ -3,7 +3,7 @@
 # Makefile
 
 CC = gcc
-CFLAGS = -Os -Wall -Wextra
+CFLAGS = -O0 -Wall -Wextra
 LDFLAGS = 
 
 OBJDIR = ./obj
@@ -11,12 +11,12 @@ OUTDIR = .
 
 TARGET_SERVER = $(OUTDIR)/myftps
 OBJECTS_SERVER = $(addprefix $(OBJDIR)/, \
-	myftps.o myftps_context.o util.o \
-	myftp.o dynamic_string.o)
+	myftps.o myftps_context.o util.o myftp.o dynamic_string.o)
 TARGET_CLIENT = $(OUTDIR)/myftpc
 OBJECTS_CLIENT = $(addprefix $(OBJDIR)/, \
-	myftpc.o util.o myftp.o \
-	dynamic_string.o)
+	myftpc.o myftpc_context.o util.o myftp.o dynamic_string.o)
+
+default: server client
 
 server: $(TARGET_SERVER)
 client: $(TARGET_CLIENT)

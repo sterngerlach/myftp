@@ -40,6 +40,16 @@
 void chomp(char* str);
 
 /*
+ * 空白文字かどうかを判定
+ */
+bool is_blank_char(char c);
+
+/*
+ * 文字列を空白文字で分割
+ */
+int split(char** dst, char* src, bool (*is_delimiter)(char));
+
+/*
  * 文字列(10進数の整数表現)を整数に変換
  */
 bool strict_strtol(const char* nptr, long* valptr);

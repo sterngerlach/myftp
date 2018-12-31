@@ -2,6 +2,7 @@
 # .gitignore
 
 myftp/obj/*
+test/*
 myftps
 myftpc
 

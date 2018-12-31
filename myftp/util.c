@@ -27,6 +27,81 @@ void chomp(char* str)
 }
 
 /*
+ * 空白文字かどうかを判定
+ */
+bool is_blank_char(char c)
+{
+    return (strchr(" \t", c) != NULL);
+}
+
+/*
+ * 文字列を空白文字で分割
+ */
+int split(char** dst, char* src, bool (*is_delimiter)(char))
+{
+    int num = 0;
+
+    assert(src != NULL);
+    assert(is_delimiter != NULL);
+
+    /* 出力先がNULLである場合は, 分割後の文字列の個数を返す */
+    if (dst == NULL) {
+        while (true) {
+            /* 空白文字をスキップ */
+            while ((*is_delimiter)(*src))
+                ++src;
+            
+            /* 文字列の終端に達した場合は終了 */
+            if (*src == '\0')
+                break;
+            
+            /* 分割された文字列の個数を更新 */
+            ++num;
+            
+            /* 文字列をスキップ */
+            while (*src && !(*is_delimiter)(*src))
+                ++src;
+            
+            /* 文字列の終端に達した場合は終了 */
+            if (*src == '\0')
+                break;
+
+            /* 空白文字をスキップ */
+            ++src;
+        }
+
+        return num;
+    }
+
+    /* 出力先がNULLでなければ, 文字列を空白文字で分割 */
+    while (true) {
+        /* 空白文字をスキップ */
+        while ((*is_delimiter)(*src))
+            ++src;
+
+        /* 文字列の終端に達した場合は終了 */
+        if (*src == '\0')
+            break;
+
+        /* 分割された文字列へのポインタを格納 */
+        dst[num++] = src;
+
+        /* 文字列をスキップ */
+        while (*src && !(*is_delimiter)(*src))
+            ++src;
+
+        /* 文字列の終端に達した場合は終了 */
+        if (*src == '\0')
+            break;
+
+        /* 空白文字をヌル文字で置換 */
+        *src++ = '\0';
+    }
+
+    return num;
+}
+
+/*
  * 文字列(10進数の整数表現)を整数に変換
  */
 bool strict_strtol(const char* nptr, long* valptr)
@@ -110,6 +185,9 @@ ssize_t recv_all(int sockfd, void* buf, ssize_t len)
 
     while (recv_total < len) {
         /* データを可能な限り受信 */
+        /* print_message(__func__, "buf: %p, buf + recv_total: %p, len - recv_total: %zd\n",
+                      buf, buf + recv_total, len - recv_total); */
+
         recv_bytes = recv(sockfd, buf + recv_total, len - recv_total, 0);
 
         if (recv_bytes < 0) {

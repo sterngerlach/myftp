@@ -5,12 +5,20 @@
 #ifndef MYFTP_H
 #define MYFTP_H
 
+#include <stdbool.h>
 #include <stdint.h>
+
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 /*
  * サーバが使用するポート番号
  */
 #define FTP_SERVER_PORT                             50021
+#define FTP_SERVER_PORT_STR                         "50021"
 
 /*
  * クライアントの接続要求を保持する待ち行列の長さ
@@ -85,31 +93,38 @@ struct ftp_header* create_ftp_header(
 void dump_ftp_header(const struct ftp_header* header);
 
 /*
+ * FTPヘッダ(先頭の4バイト)を受信
+ */
+bool receive_ftp_header(
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
+    struct ftp_header* header);
+
+/*
  * 文字列データを受信
  */
 bool receive_string_data(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     uint16_t len, char** data);
 
 /*
  * 生データ(バイト列)を受信
  */
 bool receive_raw_data(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     uint16_t len, char** data);
 
 /*
  * ファイルをデータメッセージで受信
  */
 bool receive_file_data_message(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     int fd);
 
 /*
  * メッセージを送信
  */
 bool send_ftp_header(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     uint8_t type, uint8_t code,
     uint16_t len, char* buf);
 
@@ -117,15 +132,28 @@ bool send_ftp_header(
  * データメッセージを送信
  */
 bool send_data_message(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     char* buf, ssize_t len, ssize_t chunk_size);
 
 /*
  * ファイルをデータメッセージで送信
  */
 bool send_file_data_message(
-    int sockfd, struct in_addr addr, const char* name,
+    int sockfd, struct in_addr addr, const char* name, bool verbose,
     int fd, ssize_t chunk_size);
+
+/*
+ * ファイルの属性を文字列に変換
+ */
+bool get_file_stat_string(
+    char** buffer, int* save_errno,
+    const struct stat* stat_buf, const char* file_name);
+
+/*
+ * ファイルの情報を取得して文字列に変換
+ */
+bool get_list_command_result(
+    char** buffer, int* save_errno, const char* path, bool verbose);
 
 /*
  * FTPヘッダのTypeフィールドを表す定数を文字列に変換
