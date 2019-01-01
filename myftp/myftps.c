@@ -233,6 +233,30 @@ bool update_current_directory(
 }
 
 /*
+ * ソケットを閉じる
+ */
+bool close_socket(int sock)
+{
+    assert(sock >= 0);
+
+    /* ソケットでの通信を停止 */
+    if (shutdown(sock, SHUT_RDWR) < 0) {
+        print_error(__func__, "shutdown() failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    /* ソケットを閉じる */
+    if (close(sock) < 0) {
+        print_error(__func__, "close() failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    print_message(__func__, "socket (sockfd: %d) successfully closed\n", sock);
+
+    return true;
+}
+
+/*
  * サーバの接続待ちソケットの作成
  */
 bool setup_listen_socket(int* listen_sock)
@@ -258,6 +282,7 @@ bool setup_listen_socket(int* listen_sock)
     if (setsockopt(*listen_sock, SOL_SOCKET, SO_REUSEADDR,
                    &reuse_addr, sizeof(reuse_addr)) < 0) {
         print_error(__func__, "setsockopt() failed: %s\n", strerror(errno));
+        close_socket(*listen_sock);
         return false;
     }
 
@@ -272,36 +297,13 @@ bool setup_listen_socket(int* listen_sock)
         print_error(__func__,
                     "bind() failed: %s, failed to bind listening socket\n",
                     strerror(errno));
+        close_socket(*listen_sock);
         return false;
     }
 
     print_message(__func__,
                   "server ip address: %s (INADDR_ANY), port: %" PRIu16 "\n",
                   inet_ntoa(server_addr.sin_addr), FTP_SERVER_PORT);
-
-    return true;
-}
-
-/*
- * ソケットを閉じる
- */
-bool close_socket(int sock)
-{
-    assert(sock >= 0);
-
-    /* ソケットでの通信を停止 */
-    if (shutdown(sock, SHUT_RDWR) < 0) {
-        print_error(__func__, "shutdown() failed: %s\n", strerror(errno));
-        return false;
-    }
-
-    /* ソケットを閉じる */
-    if (close(sock) < 0) {
-        print_error(__func__, "close() failed: %s\n", strerror(errno));
-        return false;
-    }
-
-    print_message(__func__, "socket (sockfd: %d) successfully closed\n", sock);
 
     return true;
 }
@@ -332,10 +334,17 @@ bool on_quit_command_received(
     *app_exit = true;
 
     /* FTPヘッダのチェック */
-    /* codeフィールドの誤りについては無視 */
+    /* codeフィールドが0でない場合はエラー */
     if (received_header->code != 0) {
         print_message(__func__,
                       "invalid quit command: 'code' field must be set to 0\n");
+
+        /* クライアントにエラーメッセージを送信 */
+        send_ftp_header(context->accept_sock, context->client_addr, "client", true,
+                        FTP_HEADER_TYPE_CMD_ERR, FTP_HEADER_CODE_CMD_ERR_SYNTAX,
+                        0, NULL);
+
+        return false;
     }
     
     /* lengthフィールドが0でない場合はエラー */
@@ -355,7 +364,8 @@ bool on_quit_command_received(
     if (!send_ftp_header(context->accept_sock, context->client_addr, "client", true,
                          FTP_HEADER_TYPE_OK, FTP_HEADER_CODE_OK, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to client %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to client %s\n",
                     inet_ntoa(context->client_addr));
         return false;
     }
@@ -382,10 +392,17 @@ bool on_pwd_command_received(
     data_length = ntohs(received_header->length);
     
     /* FTPヘッダのチェック */
-    /* codeフィールドの誤りについては無視 */
+    /* codeフィールドが0でない場合はエラー */
     if (received_header->code != 0) {
         print_message(__func__,
                       "invalid pwd command: 'code' field must be set to 0\n");
+
+        /* クライアントにエラーメッセージを送信 */
+        send_ftp_header(context->accept_sock, context->client_addr, "client", true,
+                        FTP_HEADER_TYPE_CMD_ERR, FTP_HEADER_CODE_CMD_ERR_SYNTAX,
+                        0, NULL);
+
+        return false;
     }
     
     /* lengthフィールドが0でない場合はエラー */
@@ -406,8 +423,10 @@ bool on_pwd_command_received(
                          FTP_HEADER_TYPE_OK, FTP_HEADER_CODE_OK,
                          strlen(context->cwd), context->cwd)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to client %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to client %s\n",
                     inet_ntoa(context->client_addr));
+
         return false;
     }
 
@@ -437,10 +456,17 @@ bool on_cwd_command_received(
     data_length = ntohs(received_header->length);
 
     /* FTPヘッダのチェック */
-    /* codeフィールドの誤りについては無視 */
+    /* codeフィールドが0でない場合はエラー */
     if (received_header->code != 0) {
         print_message(__func__,
                       "invalid cwd command: 'code' field must be set to 0\n");
+
+        /* クライアントにエラーメッセージを送信 */
+        send_ftp_header(context->accept_sock, context->client_addr, "client", true,
+                        FTP_HEADER_TYPE_CMD_ERR, FTP_HEADER_CODE_CMD_ERR_SYNTAX,
+                        0, NULL);
+
+        return false;
     }
     
     /* lengthフィールドが0である場合はエラー */
@@ -459,13 +485,19 @@ bool on_cwd_command_received(
     /* データ部分を受信 */
     if (!receive_string_data(context->accept_sock, context->client_addr, "client",
                              true, data_length, &data)) {
-        print_error(__func__, "receive_string_data() failed\n");
+        print_error(__func__,
+                    "receive_string_data() failed, "
+                    "could not receive 'data' field from client %s\n",
+                    inet_ntoa(context->client_addr));
         return false;
     }
 
     /* カレントディレクトリを変更 */
     if (!update_current_directory(context, data, &save_errno))
-        print_error(__func__, "update_current_directory() failed\n");
+        print_error(__func__,
+                    "update_current_directory() failed, "
+                    "unable to change current directory to \'%s\'\n",
+                    data);
     
     /* 受信したデータを解放 */
     SAFE_FREE(data);
@@ -502,7 +534,8 @@ bool on_cwd_command_received(
     if (!send_ftp_header(context->accept_sock, context->client_addr, "client", true,
                          type, code, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to client %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to client %s\n",
                     inet_ntoa(context->client_addr));
         return false;
     }
@@ -534,17 +567,27 @@ bool on_list_command_received(
     data_length = ntohs(received_header->length);
 
     /* FTPヘッダのチェック */
-    /* codeフィールドの誤りについては無視 */
+    /* codeフィールドが0でない場合はエラー */
     if (received_header->code != 0) {
         print_message(__func__,
                       "invalid list command: 'code' field must be set to 0\n");
+
+        /* クライアントにエラーメッセージを送信 */
+        send_ftp_header(context->accept_sock, context->client_addr, "client", true,
+                        FTP_HEADER_TYPE_CMD_ERR, FTP_HEADER_CODE_CMD_ERR_SYNTAX,
+                        0, NULL);
+
+        return false;
     }
     
     /* データ部分を受信 */
     if (data_length != 0) {
         if (!receive_string_data(context->accept_sock, context->client_addr, "client",
                                  true, data_length, &data)) {
-            print_error(__func__, "receive_string_data() failed\n");
+            print_error(__func__,
+                        "receive_string_data() failed, "
+                        "could not receive 'data' field from client %s\n",
+                        inet_ntoa(context->client_addr));
             return false;
         }
     }
@@ -594,7 +637,8 @@ bool on_list_command_received(
     if (!send_ftp_header(context->accept_sock, context->client_addr, "client", true,
                          type, code, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to client %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to client %s\n",
                     inet_ntoa(context->client_addr));
         return false;
     }
@@ -607,7 +651,8 @@ bool on_list_command_received(
     if (!send_data_message(context->accept_sock, context->client_addr, "client", true,
                            send_data, strlen(send_data), 1024)) {
         print_error(__func__,
-                    "send_data_message() failed, could not send data message to client %s\n",
+                    "send_data_message() failed, "
+                    "could not send data message to client %s\n",
                     inet_ntoa(context->client_addr));
         return false;
     }
@@ -643,10 +688,17 @@ bool on_retr_command_received(
     data_length = ntohs(received_header->length);
 
     /* FTPヘッダのチェック */
-    /* codeフィールドの誤りについては無視 */
+    /* codeフィールドが0でなければエラー */
     if (received_header->code != 0) {
         print_message(__func__,
                       "invalid retr command: 'code' field must be set to 0\n");
+
+        /* クライアントにエラーメッセージを送信 */
+        send_ftp_header(context->accept_sock, context->client_addr, "client", true,
+                        FTP_HEADER_TYPE_CMD_ERR, FTP_HEADER_CODE_CMD_ERR_SYNTAX,
+                        0, NULL);
+
+        return false;
     }
 
     /* lengthフィールドが0である場合はエラー */
@@ -665,7 +717,10 @@ bool on_retr_command_received(
     /* データ部分を受信 */
     if (!receive_string_data(context->accept_sock, context->client_addr, "client",
                              true, data_length, &data)) {
-        print_error(__func__, "receive_string_data() failed\n");
+        print_error(__func__,
+                    "receive_string_data() failed, "
+                    "could not receive 'data' field from client %s\n",
+                    inet_ntoa(context->client_addr));
         return false;
     }
 
@@ -742,7 +797,8 @@ bool on_retr_command_received(
     if (!send_ftp_header(context->accept_sock, context->client_addr, "client", true,
                          type, code, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to client %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to client %s\n",
                     inet_ntoa(context->client_addr));
         
         /* ファイルが開かれていれば閉じる */
@@ -807,10 +863,17 @@ bool on_stor_command_received(
     data_length = ntohs(received_header->length);
 
     /* FTPヘッダのチェック */
-    /* codeフィールドの誤りについては無視 */
+    /* codeフィールドが0でなければエラー */
     if (received_header->code != 0) {
         print_message(__func__,
                       "invalid stor command: 'code' field must be set to 0\n");
+
+        /* クライアントにエラーメッセージを送信 */
+        send_ftp_header(context->accept_sock, context->client_addr, "client", true,
+                        FTP_HEADER_TYPE_CMD_ERR, FTP_HEADER_CODE_CMD_ERR_SYNTAX,
+                        0, NULL);
+
+        return false;
     }
 
     /* lengthフィールドが0である場合はエラー */
@@ -829,7 +892,10 @@ bool on_stor_command_received(
     /* データ部分を受信 */
     if (!receive_string_data(context->accept_sock, context->client_addr, "client",
                              true, data_length, &data)) {
-        print_error(__func__, "receive_string_data() failed\n");
+        print_error(__func__,
+                    "receive_string_data() failed, "
+                    "could not receive 'data' field from client %s\n",
+                    inet_ntoa(context->client_addr));
         return false;
     }
 
@@ -870,7 +936,8 @@ bool on_stor_command_received(
     if (!send_ftp_header(context->accept_sock, context->client_addr, "client", true,
                          type, code, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to client %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to client %s\n",
                     inet_ntoa(context->client_addr));
 
         /* ファイルが開かれていれば閉じる */
@@ -1043,7 +1110,9 @@ bool run_ftp_server(struct ftp_server_context* context)
         }
 
         print_message(__func__,
-                      "connection to client %s (port: %" PRIu16 ", sockfd: %d) is established\n",
+                      ANSI_ESCAPE_COLOR_BLUE
+                      "connection to client %s (port: %" PRIu16 ", sockfd: %d) is established"
+                      ANSI_ESCAPE_COLOR_RESET "\n",
                       inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port),
                       accept_sock);
         

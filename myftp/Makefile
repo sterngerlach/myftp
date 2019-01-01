@@ -3,7 +3,7 @@
 # Makefile
 
 CC = gcc
-CFLAGS = -O0 -Wall -Wextra
+CFLAGS = -Os -Wall -Wextra
 LDFLAGS = 
 
 OBJDIR = ./obj

@@ -65,6 +65,14 @@ bool get_server_addr_info(
                     gai_strerror(err));
         return false;
     }
+
+    /* サーバのIPアドレスがIPv4でなければエラー */
+    if (result->ai_family != AF_INET) {
+        print_error(__func__,
+                    "unexpected address family: %d, AF_INET expected\n",
+                    result->ai_family);
+        return false;
+    }
     
     /* サーバのIPアドレスを出力 */
     print_message(__func__,
@@ -134,8 +142,10 @@ char* get_line()
     size_t length = 0;
     ssize_t cc = 0;
 
-    if ((cc = getline(&input, &length, stdin)) == -1)
+    if ((cc = getline(&input, &length, stdin)) == -1) {
+        SAFE_FREE(input);
         return NULL;
+    }
 
     /* 改行を除去 */
     chomp(input);
@@ -166,7 +176,8 @@ bool on_command_quit(
     if (!send_ftp_header(context->client_sock, context->server_addr, "server", false,
                          FTP_HEADER_TYPE_QUIT, 0, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to server %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to server %s\n",
                     inet_ntoa(context->server_addr));
         return false;
     }
@@ -181,12 +192,26 @@ bool on_command_quit(
         return false;
     }
 
-    /* エラーメッセージであった場合はその旨を表示 */
+    /* メッセージの内容をチェック */
+    /* エラーメッセージであった場合 */
     if (header.type != FTP_HEADER_TYPE_OK) {
         fprintf(stderr,
                 "unexpected message type: %s, %s expected\n",
                 ftp_header_type_to_string(header.type),
                 ftp_header_type_to_string(FTP_HEADER_TYPE_OK));
+    }
+
+    if (header.code != FTP_HEADER_CODE_OK) {
+        fprintf(stderr,
+                "unexpected message code: %s, %s expected\n",
+                ftp_header_code_to_string(header.type, header.code),
+                ftp_header_code_to_string(FTP_HEADER_TYPE_OK, FTP_HEADER_CODE_OK));
+    }
+
+    if (ntohs(header.length) != 0) {
+        fprintf(stderr,
+                "invalid length field: %" PRIu16 ", 0 expected\n",
+                ntohs(header.length));
     }
     
     /* クライアントを終了 */
@@ -219,7 +244,8 @@ bool on_command_pwd(
     if (!send_ftp_header(context->client_sock, context->server_addr, "server", false,
                          FTP_HEADER_TYPE_PWD, 0, 0, NULL)) {
         print_error(__func__,
-                    "send_ftp_header() failed, could not send ftp header to server %s\n",
+                    "send_ftp_header() failed, "
+                    "could not send ftp header to server %s\n",
                     inet_ntoa(context->server_addr));
         return false;
     }
@@ -234,6 +260,7 @@ bool on_command_pwd(
         return false;
     }
 
+    /* メッセージの内容をチェック */
     /* エラーメッセージであった場合 */
     if (header.type != FTP_HEADER_TYPE_OK) {
         fprintf(stderr,
@@ -241,6 +268,19 @@ bool on_command_pwd(
                 ftp_header_type_to_string(header.type),
                 ftp_header_code_to_string(header.type, header.code));
         return true;
+    }
+
+    if (header.code != FTP_HEADER_CODE_OK) {
+        fprintf(stderr,
+                "unexpected message code: %s, %s expected\n",
+                ftp_header_code_to_string(header.type, header.code),
+                ftp_header_code_to_string(FTP_HEADER_TYPE_OK, FTP_HEADER_CODE_OK));
+    }
+
+    if (ntohs(header.length) == 0) {
+        fprintf(stderr,
+                "invalid length field: %" PRIu16 ", larger than 0 expected\n",
+                ntohs(header.length));
     }
 
     /* サーバからデータを受信 */
@@ -298,14 +338,28 @@ bool on_command_cd(
                     inet_ntoa(context->server_addr));
         return false;
     }
-
+    
+    /* メッセージの内容をチェック */
     /* エラーメッセージであった場合 */
     if (header.type != FTP_HEADER_TYPE_OK) {
         fprintf(stderr,
-                "unable to change current directory of remote server (type: %s, code: %s)\n",
+                "unable to change directory of remote server (type: %s, code: %s)\n",
                 ftp_header_type_to_string(header.type),
                 ftp_header_code_to_string(header.type, header.code));
         return true;
+    }
+
+    if (header.code != FTP_HEADER_CODE_OK) {
+        fprintf(stderr,
+                "unexpected message code: %s, %s expected\n",
+                ftp_header_code_to_string(header.type, header.code),
+                ftp_header_code_to_string(FTP_HEADER_TYPE_OK, FTP_HEADER_CODE_OK));
+    }
+
+    if (ntohs(header.length) != 0) {
+        fprintf(stderr,
+                "invalid length field: %" PRIu16 ", 0 expected\n",
+                ntohs(header.length));
     }
 
     return true;
@@ -350,7 +404,8 @@ bool on_command_dir(
                     inet_ntoa(context->server_addr));
         return false;
     }
-
+    
+    /* メッセージの内容をチェック */
     /* エラーメッセージであった場合 */
     if (header.type != FTP_HEADER_TYPE_OK) {
         fprintf(stderr,
@@ -358,6 +413,21 @@ bool on_command_dir(
                 ftp_header_type_to_string(header.type),
                 ftp_header_code_to_string(header.type, header.code));
         return true;
+    }
+
+    if (header.code != FTP_HEADER_CODE_OK_SERVER_DATA_REMAINING) {
+        fprintf(stderr,
+                "unexpected message code: %s, %s expected\n",
+                ftp_header_code_to_string(header.type, header.code),
+                ftp_header_code_to_string(FTP_HEADER_TYPE_OK,
+                                          FTP_HEADER_CODE_OK_SERVER_DATA_REMAINING));
+        return true;
+    }
+
+    if (ntohs(header.length) != 0) {
+        fprintf(stderr,
+                "invalid length field: %" PRIu16 ", 0 expected\n",
+                ntohs(header.length));
     }
 
     /* データメッセージを取得 */
@@ -394,7 +464,7 @@ bool on_command_lpwd(
     
     /* カレントディレクトリを取得 */
     if (getcwd(buffer, sizeof(buffer)) == NULL) {
-        fprintf(stderr, "unable to get current directory\n");
+        fprintf(stderr, "unable to get current directory: %s\n", strerror(errno));
         return true;
     }
     
@@ -423,7 +493,7 @@ bool on_command_lcd(
     
     /* カレントディレクトリを変更 */
     if (chdir(args[1]) < 0) {
-        fprintf(stderr, "unable to change current directory\n");
+        fprintf(stderr, "unable to change current directory, %s\n", strerror(errno));
         return true;
     }
 
@@ -456,14 +526,11 @@ bool on_command_ldir(
     
     /* 指定されたパスの情報を取得 */
     if (!get_list_command_result(&buffer, &save_errno, path, false)) {
-        switch (save_errno) {
-            case 0:
-                fprintf(stderr, "unable to list files due to unknown error\n");
-                break;
-            default:
-                fprintf(stderr, "unable to list files: %s\n", strerror(errno));
-                break;
-        }
+        if (save_errno == 0)
+            fprintf(stderr, "unable to list files: unknown error\n");
+        else
+            fprintf(stderr, "unable to list files: %s\n", strerror(errno));
+
         return true;
     }
     
@@ -532,7 +599,8 @@ bool on_command_get(
 
         return false;
     }
-
+    
+    /* メッセージの内容をチェック */
     /* エラーメッセージであった場合 */
     if (header.type != FTP_HEADER_TYPE_OK) {
         fprintf(stderr,
@@ -544,6 +612,21 @@ bool on_command_get(
             print_error(__func__, "close() failed: %s\n", strerror(errno));
 
         return true;
+    }
+
+    if (header.code != FTP_HEADER_CODE_OK_SERVER_DATA_REMAINING) {
+        fprintf(stderr,
+                "unexpected message code: %s, %s expected\n",
+                ftp_header_code_to_string(header.type, header.code),
+                ftp_header_code_to_string(FTP_HEADER_TYPE_OK,
+                                          FTP_HEADER_CODE_OK_SERVER_DATA_REMAINING));
+        return true;
+    }
+
+    if (ntohs(header.length) != 0) {
+        fprintf(stderr,
+                "invalid length field: %" PRIu16 ", 0 expected\n",
+                ntohs(header.length));
     }
     
     /* ファイルの内容をデータメッセージで受信 */
@@ -612,7 +695,7 @@ bool on_command_put(
 
         return false;
     }
-
+    
     /* サーバからリプライメッセージを受信 */
     if (!receive_ftp_header(context->client_sock, context->server_addr, "server",
                             false, &header)) {
@@ -626,7 +709,8 @@ bool on_command_put(
 
         return false;
     }
-
+    
+    /* メッセージの内容をチェック */
     /* エラーメッセージであった場合 */
     if (header.type != FTP_HEADER_TYPE_OK) {
         fprintf(stderr,
@@ -638,6 +722,25 @@ bool on_command_put(
             print_error(__func__, "close() failed: %s\n", strerror(errno));
 
         return true;
+    }
+    
+    if (header.code != FTP_HEADER_CODE_OK_CLIENT_DATA_REMAINING) {
+        fprintf(stderr,
+                "unexpected message code: %s, %s expected\n",
+                ftp_header_code_to_string(header.type, header.code),
+                ftp_header_code_to_string(FTP_HEADER_TYPE_OK,
+                                          FTP_HEADER_CODE_OK_CLIENT_DATA_REMAINING));
+
+        if (close(fd) < 0)
+            print_error(__func__, "close() failed: %s\n", strerror(errno));
+
+        return true;
+    }
+
+    if (ntohs(header.length) != 0) {
+        fprintf(stderr,
+                "invalid length field: %" PRIu16 ", 0 expected\n",
+                ntohs(header.length));
     }
     
     /* ファイルの内容をデータメッセージで送信 */
@@ -670,6 +773,47 @@ bool on_command_help(
     struct ftp_client_context* context,
     int argc, char** args, bool* app_exit)
 {
+    assert(context != NULL);
+    assert(argc > 0);
+    assert(args != NULL);
+    assert(app_exit != NULL);
+
+    /* ヘルプを表示 */
+    fprintf(stderr,
+            "                  __ _         \n"
+            "                 / _| |        \n"
+            " _ __ ___  _   _| |_| |_ _ __  \n"
+            "| '_ ` _ \\| | | |  _| __| '_ \\ \n"
+            "| | | | | | |_| | | | |_| |_) |\n"
+            "|_| |_| |_|\\__, |_|  \\__| .__/ \n"
+            "            __/ |       | |    \n"
+            "           |___/        |_|    \n\n");
+
+    fprintf(stderr,
+            "myftpc: pseudo ftp client\n"
+            "build time: %s - %s\n"
+            "usage: myftpc <server host name>\n\n"
+            "available commands: \n"
+            "    quit                   "
+            "quit pseudo ftp client\n"
+            "    pwd                    "
+            "show current directory of remote server\n"
+            "    cd                     "
+            "change directory of remote server\n"
+            "    dir                    "
+            "list files on remote server\n"
+            "    lpwd                   "
+            "show current directory of local computer\n"
+            "    lcd                    "
+            "change directory of local computer\n"
+            "    ldir                   "
+            "list files on local computer\n"
+            "    get <from> [<to>]      "
+            "transfer file from server to client\n"
+            "    put <from> [<to>]      "
+            "transfer file from client to server\n\n",
+            __DATE__, __TIME__);
+
     return true;
 }
 

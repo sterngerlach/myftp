@@ -267,7 +267,7 @@ bool receive_file_data_message(
         }
     
         if (verbose) {
-            print_message(__func__, "tcp header received from %s %s: ",
+            print_message(__func__, "ftp data message received from %s %s: ",
                           name, inet_ntoa(addr));
             dump_ftp_header(&header);
         }
@@ -410,6 +410,12 @@ bool send_data_message(
             return false;
         }
 
+        if (verbose) {
+            print_message(__func__, "ftp data message sent to %s %s: ",
+                          name, inet_ntoa(addr));
+            dump_ftp_header(header);
+        }
+
         /* メッセージを解放 */
         SAFE_FREE(header);
 
@@ -507,6 +513,12 @@ bool send_file_data_message(
             SAFE_FREE(header);
             SAFE_FREE(buffer);
             return false;
+        }
+
+        if (verbose) {
+            print_message(__func__, "ftp data message sent to %s %s: ",
+                          name, inet_ntoa(addr));
+            dump_ftp_header(header);
         }
 
         /* メッセージを解放 */
